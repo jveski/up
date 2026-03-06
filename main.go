@@ -316,7 +316,7 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 	initrdPath := filepath.Join(ImageDir, vm.Image+".initrd")
 
 	appendLine := fmt.Sprintf(
-		"root=/dev/vda console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
+		"root=/dev/vda rw console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
 		vm.Name, vm.Slot, vm.IP, BridgeIP, BridgeIP, sshPubKey,
 	)
 
@@ -799,9 +799,9 @@ func metadataRoutes(signals *signalQueue) *http.ServeMux {
 
 func loadSSHKey() {
 	paths := []string{
-		"/root/.ssh/authorized_keys",
 		"/root/.ssh/id_ed25519.pub",
 		"/root/.ssh/id_rsa.pub",
+		"/root/.ssh/authorized_keys",
 	}
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
