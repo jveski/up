@@ -43,16 +43,23 @@ fail() {
     tail -80 "$LOG_FILE"
     echo "--- end daemon log ---"
   fi
-  local serial_log="/var/lib/up/overlays/${VM_NAME}-serial.log"
+  local serial_log="/tmp/up-serial-${VM_NAME}.log"
   if [ -f "$serial_log" ]; then
     echo "--- VM serial console (last 80 lines) ---"
     tail -80 "$serial_log"
     echo "--- end VM serial console ---"
+  else
+    echo "--- VM serial console: NOT FOUND at $serial_log ---"
   fi
   echo "--- network diagnostics ---"
   ip addr show upbr0 2>/dev/null || echo "bridge upbr0 not found"
+  ip link show uptap0 2>/dev/null || echo "uptap0 not found"
   iptables -L FORWARD -n -v 2>/dev/null | head -20 || true
   cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo "bridge-nf-call-iptables: N/A"
+  # Try pinging the VM to test basic connectivity
+  ping -c 2 -W 2 "${VM_IP:-10.10.10.10}" 2>&1 || true
+  # Show ARP table for the bridge subnet
+  arp -n 2>/dev/null | grep 10.10.10 || echo "no ARP entries for 10.10.10.x"
   echo "--- end network diagnostics ---"
   exit 1
 }
@@ -91,6 +98,7 @@ cleanup() {
   rm -f /tmp/smoke-rootfs.img
 
   rm -f "$LOG_FILE"
+  rm -f /tmp/up-serial-*.log
 }
 trap cleanup EXIT
 
@@ -205,6 +213,10 @@ EOF
 mountpoint -q /proc || mount -t proc proc /proc
 mountpoint -q /sys  || mount -t sysfs sys /sys
 mountpoint -q /dev  || mount -t devtmpfs dev /dev
+
+# Ensure root filesystem is read-write (Alpine initramfs may mount it ro)
+mount -o remount,rw / 2>/dev/null
+
 mount -t tmpfs tmpfs /tmp  2>/dev/null
 mount -t tmpfs tmpfs /run  2>/dev/null
 mkdir -p /dev/pts /dev/shm

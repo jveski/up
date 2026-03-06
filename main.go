@@ -350,9 +350,11 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 	initrdPath := filepath.Join(ImageDir, vm.Image+".initrd")
 
 	appendLine := fmt.Sprintf(
-		"root=/dev/vda rw rootfstype=ext4 console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
+		"root=/dev/vda rw rootfstype=ext4 rootflags=rw console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
 		vm.Name, vm.Slot, vm.IP, BridgeIP, BridgeIP, sshPubKey,
 	)
+
+	serialLogPath := filepath.Join("/tmp", "up-serial-"+vm.Name+".log")
 
 	args := []string{
 		"-name", vm.Name,
@@ -360,7 +362,9 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 		"-cpu", "host",
 		"-m", "2048",
 		"-smp", "2",
-		"-nographic",
+		"-display", "none",
+		"-serial", "file:" + serialLogPath,
+		"-monitor", "none",
 		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", vm.Overlay),
 		"-netdev", fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", vm.TAPDevice),
 		"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", mac),
@@ -376,27 +380,8 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 	}
 
 	cmd := exec.Command("qemu-system-x86_64", args...)
-
-	// Capture serial console output (sent to stdout with -nographic) for
-	// debugging VM boot issues.
-	serialLogPath := filepath.Join(OverlayDir, vm.Name+"-serial.log")
-	serialLog, err := os.Create(serialLogPath)
-	if err != nil {
-		log.Info("could not create serial log", "path", serialLogPath, "err", err)
-	} else {
-		cmd.Stdout = serialLog
-		cmd.Stderr = serialLog
-	}
-
 	if err := cmd.Start(); err != nil {
-		if serialLog != nil {
-			serialLog.Close()
-		}
 		return fmt.Errorf("start QEMU: %w", err)
-	}
-	// Child process has inherited the fd; close our copy.
-	if serialLog != nil {
-		serialLog.Close()
 	}
 
 	vm.PID = cmd.Process.Pid
