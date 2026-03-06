@@ -225,7 +225,33 @@ func reconcileBridge() (Result, error) {
 		return Result{}, fmt.Errorf("enable IP forwarding: %w", err)
 	}
 
-	// 4. MASQUERADE rule
+	// 4. FORWARD rules (required when the default FORWARD policy is DROP,
+	//    e.g. hosts running Docker).  With bridge-nf-call-iptables enabled
+	//    even intra-bridge traffic traverses the FORWARD chain.
+	if _, err := run("iptables", "-C", "FORWARD",
+		"-i", BridgeName, "-o", BridgeName, "-j", "ACCEPT"); err != nil {
+		log.Info("adding FORWARD rules for bridge")
+		if _, err := run("iptables", "-I", "FORWARD",
+			"-i", BridgeName, "-o", BridgeName, "-j", "ACCEPT"); err != nil {
+			return Result{}, fmt.Errorf("add FORWARD intra-bridge: %w", err)
+		}
+	}
+	if _, err := run("iptables", "-C", "FORWARD",
+		"-i", BridgeName, "!", "-o", BridgeName, "-j", "ACCEPT"); err != nil {
+		if _, err := run("iptables", "-I", "FORWARD",
+			"-i", BridgeName, "!", "-o", BridgeName, "-j", "ACCEPT"); err != nil {
+			return Result{}, fmt.Errorf("add FORWARD outbound: %w", err)
+		}
+	}
+	if _, err := run("iptables", "-C", "FORWARD",
+		"-o", BridgeName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+		if _, err := run("iptables", "-I", "FORWARD",
+			"-o", BridgeName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+			return Result{}, fmt.Errorf("add FORWARD return: %w", err)
+		}
+	}
+
+	// 5. MASQUERADE rule
 	if _, err := run("iptables", "-t", "nat", "-C", "POSTROUTING",
 		"-s", BridgeSubnet, "!", "-d", BridgeSubnet, "-j", "MASQUERADE"); err != nil {
 		log.Info("adding MASQUERADE rule")
@@ -1012,6 +1038,12 @@ func shutdown(apiServer, metaServer *http.Server, signals *signalQueue) {
 	stateMu.Unlock()
 
 	run("ip", "link", "del", BridgeName)
+	run("iptables", "-D", "FORWARD",
+		"-i", BridgeName, "-o", BridgeName, "-j", "ACCEPT")
+	run("iptables", "-D", "FORWARD",
+		"-i", BridgeName, "!", "-o", BridgeName, "-j", "ACCEPT")
+	run("iptables", "-D", "FORWARD",
+		"-o", BridgeName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT")
 	run("iptables", "-t", "nat", "-D", "POSTROUTING",
 		"-s", BridgeSubnet, "!", "-d", BridgeSubnet, "-j", "MASQUERADE")
 
