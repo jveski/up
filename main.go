@@ -225,9 +225,17 @@ func reconcileBridge() (Result, error) {
 		return Result{}, fmt.Errorf("enable IP forwarding: %w", err)
 	}
 
-	// 4. FORWARD rules (required when the default FORWARD policy is DROP,
-	//    e.g. hosts running Docker).  With bridge-nf-call-iptables enabled
-	//    even intra-bridge traffic traverses the FORWARD chain.
+	// 4. Disable bridge-nf-call-iptables so bridged frames (host↔VM) do not
+	//    traverse the iptables FORWARD chain.  Docker sets the FORWARD policy
+	//    to DROP, which otherwise blocks all bridge traffic.
+	if err := os.WriteFile("/proc/sys/net/bridge/bridge-nf-call-iptables", []byte("0"), 0644); err != nil {
+		// br_netfilter module may not be loaded; that is fine — bridged
+		// traffic won't traverse iptables anyway in that case.
+		log.Info("could not disable bridge-nf-call-iptables (module may not be loaded)", "err", err)
+	}
+
+	// 5. FORWARD rules — belt-and-suspenders in case bridge-nf-call-iptables
+	//    cannot be disabled or is re-enabled later.
 	if _, err := run("iptables", "-C", "FORWARD",
 		"-i", BridgeName, "-o", BridgeName, "-j", "ACCEPT"); err != nil {
 		log.Info("adding FORWARD rules for bridge")
@@ -251,7 +259,7 @@ func reconcileBridge() (Result, error) {
 		}
 	}
 
-	// 5. MASQUERADE rule
+	// 6. MASQUERADE rule
 	if _, err := run("iptables", "-t", "nat", "-C", "POSTROUTING",
 		"-s", BridgeSubnet, "!", "-d", BridgeSubnet, "-j", "MASQUERADE"); err != nil {
 		log.Info("adding MASQUERADE rule")
@@ -342,7 +350,7 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 	initrdPath := filepath.Join(ImageDir, vm.Image+".initrd")
 
 	appendLine := fmt.Sprintf(
-		"root=/dev/vda rw console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
+		"root=/dev/vda rw rootfstype=ext4 console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
 		vm.Name, vm.Slot, vm.IP, BridgeIP, BridgeIP, sshPubKey,
 	)
 
@@ -368,8 +376,27 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 	}
 
 	cmd := exec.Command("qemu-system-x86_64", args...)
+
+	// Capture serial console output (sent to stdout with -nographic) for
+	// debugging VM boot issues.
+	serialLogPath := filepath.Join(OverlayDir, vm.Name+"-serial.log")
+	serialLog, err := os.Create(serialLogPath)
+	if err != nil {
+		log.Info("could not create serial log", "path", serialLogPath, "err", err)
+	} else {
+		cmd.Stdout = serialLog
+		cmd.Stderr = serialLog
+	}
+
 	if err := cmd.Start(); err != nil {
+		if serialLog != nil {
+			serialLog.Close()
+		}
 		return fmt.Errorf("start QEMU: %w", err)
+	}
+	// Child process has inherited the fd; close our copy.
+	if serialLog != nil {
+		serialLog.Close()
 	}
 
 	vm.PID = cmd.Process.Pid

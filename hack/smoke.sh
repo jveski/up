@@ -43,6 +43,17 @@ fail() {
     tail -80 "$LOG_FILE"
     echo "--- end daemon log ---"
   fi
+  local serial_log="/var/lib/up/overlays/${VM_NAME}-serial.log"
+  if [ -f "$serial_log" ]; then
+    echo "--- VM serial console (last 80 lines) ---"
+    tail -80 "$serial_log"
+    echo "--- end VM serial console ---"
+  fi
+  echo "--- network diagnostics ---"
+  ip addr show upbr0 2>/dev/null || echo "bridge upbr0 not found"
+  iptables -L FORWARD -n -v 2>/dev/null | head -20 || true
+  cat /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || echo "bridge-nf-call-iptables: N/A"
+  echo "--- end network diagnostics ---"
   exit 1
 }
 
