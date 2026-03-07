@@ -205,9 +205,17 @@ EOF
   chroot "$ROOTFS_MNT" sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
 
   # Write custom /sbin/init
+  # IMPORTANT: In Alpine, /sbin/init is a symlink to /bin/busybox.
+  # Using 'cat >' on a symlink follows it and corrupts the target.
+  # Remove the symlink first so we create a fresh regular file.
+  rm -f "$ROOTFS_MNT/sbin/init"
+  # Also remove /etc/inittab — if busybox init ever runs as a fallback,
+  # it reads inittab and tries to exec /sbin/openrc which doesn't exist.
+  rm -f "$ROOTFS_MNT/etc/inittab"
   cat > "$ROOTFS_MNT/sbin/init" <<'INITEOF'
 #!/bin/sh
 # Minimal init for up smoke-test Alpine VMs.
+echo "vm-init: custom init starting" > /dev/console 2>&1
 
 # Mount essential filesystems (may already exist after switch_root)
 mountpoint -q /proc || mount -t proc proc /proc
