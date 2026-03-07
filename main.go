@@ -350,7 +350,7 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 	initrdPath := filepath.Join(ImageDir, vm.Image+".initrd")
 
 	appendLine := fmt.Sprintf(
-		"root=/dev/vda rw rootfstype=ext4 rootflags=rw console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
+		"root=/dev/vda rw rootfstype=ext4 rootflags=rw init=/sbin/init console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
 		vm.Name, vm.Slot, vm.IP, BridgeIP, BridgeIP, sshPubKey,
 	)
 
