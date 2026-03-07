@@ -225,7 +225,41 @@ func reconcileBridge() (Result, error) {
 		return Result{}, fmt.Errorf("enable IP forwarding: %w", err)
 	}
 
-	// 4. MASQUERADE rule
+	// 4. Disable bridge-nf-call-iptables so bridged frames (host↔VM) do not
+	//    traverse the iptables FORWARD chain.  Docker sets the FORWARD policy
+	//    to DROP, which otherwise blocks all bridge traffic.
+	if err := os.WriteFile("/proc/sys/net/bridge/bridge-nf-call-iptables", []byte("0"), 0644); err != nil {
+		// br_netfilter module may not be loaded; that is fine — bridged
+		// traffic won't traverse iptables anyway in that case.
+		log.Info("could not disable bridge-nf-call-iptables (module may not be loaded)", "err", err)
+	}
+
+	// 5. FORWARD rules — belt-and-suspenders in case bridge-nf-call-iptables
+	//    cannot be disabled or is re-enabled later.
+	if _, err := run("iptables", "-C", "FORWARD",
+		"-i", BridgeName, "-o", BridgeName, "-j", "ACCEPT"); err != nil {
+		log.Info("adding FORWARD rules for bridge")
+		if _, err := run("iptables", "-I", "FORWARD",
+			"-i", BridgeName, "-o", BridgeName, "-j", "ACCEPT"); err != nil {
+			return Result{}, fmt.Errorf("add FORWARD intra-bridge: %w", err)
+		}
+	}
+	if _, err := run("iptables", "-C", "FORWARD",
+		"-i", BridgeName, "!", "-o", BridgeName, "-j", "ACCEPT"); err != nil {
+		if _, err := run("iptables", "-I", "FORWARD",
+			"-i", BridgeName, "!", "-o", BridgeName, "-j", "ACCEPT"); err != nil {
+			return Result{}, fmt.Errorf("add FORWARD outbound: %w", err)
+		}
+	}
+	if _, err := run("iptables", "-C", "FORWARD",
+		"-o", BridgeName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+		if _, err := run("iptables", "-I", "FORWARD",
+			"-o", BridgeName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"); err != nil {
+			return Result{}, fmt.Errorf("add FORWARD return: %w", err)
+		}
+	}
+
+	// 6. MASQUERADE rule
 	if _, err := run("iptables", "-t", "nat", "-C", "POSTROUTING",
 		"-s", BridgeSubnet, "!", "-d", BridgeSubnet, "-j", "MASQUERADE"); err != nil {
 		log.Info("adding MASQUERADE rule")
@@ -316,9 +350,11 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 	initrdPath := filepath.Join(ImageDir, vm.Image+".initrd")
 
 	appendLine := fmt.Sprintf(
-		"root=/dev/vda console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
+		"root=/dev/vda rw rootfstype=ext4 rootflags=rw init=/sbin/init console=ttyS0 up.name=%s up.slot=%d up.ip=%s up.gw=%s up.dns=%s up.key=%s",
 		vm.Name, vm.Slot, vm.IP, BridgeIP, BridgeIP, sshPubKey,
 	)
+
+	serialLogPath := filepath.Join("/tmp", "up-serial-"+vm.Name+".log")
 
 	args := []string{
 		"-name", vm.Name,
@@ -326,7 +362,9 @@ func startQEMU(vm *VMEntry, signals *signalQueue) error {
 		"-cpu", "host",
 		"-m", "2048",
 		"-smp", "2",
-		"-nographic",
+		"-display", "none",
+		"-serial", "file:" + serialLogPath,
+		"-monitor", "none",
 		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio", vm.Overlay),
 		"-netdev", fmt.Sprintf("tap,id=net0,ifname=%s,script=no,downscript=no", vm.TAPDevice),
 		"-device", fmt.Sprintf("virtio-net-pci,netdev=net0,mac=%s", mac),
@@ -799,9 +837,9 @@ func metadataRoutes(signals *signalQueue) *http.ServeMux {
 
 func loadSSHKey() {
 	paths := []string{
-		"/root/.ssh/authorized_keys",
 		"/root/.ssh/id_ed25519.pub",
 		"/root/.ssh/id_rsa.pub",
+		"/root/.ssh/authorized_keys",
 	}
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
@@ -1012,6 +1050,12 @@ func shutdown(apiServer, metaServer *http.Server, signals *signalQueue) {
 	stateMu.Unlock()
 
 	run("ip", "link", "del", BridgeName)
+	run("iptables", "-D", "FORWARD",
+		"-i", BridgeName, "-o", BridgeName, "-j", "ACCEPT")
+	run("iptables", "-D", "FORWARD",
+		"-i", BridgeName, "!", "-o", BridgeName, "-j", "ACCEPT")
+	run("iptables", "-D", "FORWARD",
+		"-o", BridgeName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT")
 	run("iptables", "-t", "nat", "-D", "POSTROUTING",
 		"-s", BridgeSubnet, "!", "-d", BridgeSubnet, "-j", "MASQUERADE")
 
